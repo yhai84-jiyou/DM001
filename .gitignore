@@ -1,24 +1,29 @@
-# Compiled class file
-*.class
+# macOS
+.DS_Store
 
-# Log file
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+*.egg-info/
+
+# Logs & runtime artifacts
 *.log
+flask_app.log
 
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
+# Node / package archives
 *.zip
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+# Java legacy entries kept for compatibility
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+.mtj.tmp/
 hs_err_pid*
 replay_pid*

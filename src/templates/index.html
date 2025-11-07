@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>图片轮播 Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="content">
+        <h1>图片轮播 Demo</h1>
+        <p class="description">将图片放到 <code>static/images</code> 文件夹，即可自动出现在轮播中。</p>
+        {% if images %}
+        <div class="carousel" role="region" aria-label="图片轮播">
+          <div class="carousel-track">
+            {% for image in images %}
+            <div class="slide">
+              <img src="{{ image.src }}" alt="轮播图片 {{ loop.index }}" />
+              <div class="slide-overlay">
+                <p class="overlay-location">{{ image.location }}</p>
+                <p class="overlay-description">{{ image.description }}</p>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          <button class="nav prev" aria-label="上一张">&#10094;</button>
+          <button class="nav next" aria-label="下一张">&#10095;</button>
+          <div class="dots" role="tablist">
+            {% for image in images %}
+            <button class="dot {% if loop.first %}active{% endif %}" data-index="{{ loop.index0 }}" aria-label="第 {{ loop.index }} 张"></button>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <p class="empty-state">暂时没有检测到图片，请将 JPG/PNG/GIF/WebP 文件放到 <code>static/images</code> 后刷新页面。</p>
+        {% endif %}
+      </section>
+    </main>
+    <script>
+      (function () {
+        const track = document.querySelector('.carousel-track');
+        if (!track) return;
+        const slides = Array.from(track.children);
+        if (!slides.length) return;
+        const prevBtn = document.querySelector('.nav.prev');
+        const nextBtn = document.querySelector('.nav.next');
+        const dots = Array.from(document.querySelectorAll('.dot'));
+        let index = 0;
+        const update = () => {
+          track.style.transform = `translateX(-${index * 100}%)`;
+          dots.forEach((dot, idx) => dot.classList.toggle('active', idx === index));
+        };
+        const goTo = (target) => {
+          index = (target + slides.length) % slides.length;
+          update();
+        };
+        prevBtn.addEventListener('click', () => goTo(index - 1));
+        nextBtn.addEventListener('click', () => goTo(index + 1));
+        dots.forEach((dot) => dot.addEventListener('click', (event) => {
+          goTo(Number(event.currentTarget.dataset.index));
+        }));
+        let autoplay = setInterval(() => goTo(index + 1), 5000);
+        const resetAutoplay = () => {
+          clearInterval(autoplay);
+          autoplay = setInterval(() => goTo(index + 1), 5000);
+        };
+        [prevBtn, nextBtn, ...dots].forEach((el) => el.addEventListener('click', resetAutoplay));
+        update();
+      })();
+    </script>
+  </body>
+</html>
