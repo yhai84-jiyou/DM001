@@ -1,22 +1,23 @@
 <template>
-  <div class="markdown-editor">
-    <div style="display:flex; gap: 16px; min-height: 500px;">
-      <textarea
-        v-model="content"
-        style="flex:1; border:1px solid #dcdfe6; border-radius:4px; padding:16px; font-family:monospace; font-size:14px; resize:vertical;"
-        :placeholder="placeholder"
-        @input="onInput"
-      ></textarea>
-      <div style="flex:1; border:1px solid #dcdfe6; border-radius:4px; padding:16px; overflow:auto;">
-        <p style="color: #909399;">Markdown 预览 (md-editor-v3 将在依赖安装后启用)</p>
-        <div v-html="content"></div>
-      </div>
-    </div>
+  <div class="markdown-editor-wrapper">
+    <MdEditor
+      v-model="content"
+      :theme="'light'"
+      :language="'zh-CN'"
+      :preview="true"
+      :toolbarsExclude="['github']"
+      :style="{ height: '500px' }"
+      @onUploadImg="handleUploadImg"
+      @onChange="handleChange"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { MdEditor } from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
+import { mediaApi } from '@/api/media'
 
 const props = defineProps<{
   modelValue?: string
@@ -30,10 +31,35 @@ const emit = defineEmits<{
 const content = ref(props.modelValue || '')
 
 watch(() => props.modelValue, (v) => {
-  if (v !== undefined) content.value = v
+  if (v !== undefined && v !== content.value) {
+    content.value = v
+  }
 })
 
-function onInput() {
-  emit('update:modelValue', content.value)
+function handleChange(val: string) {
+  emit('update:modelValue', val)
+}
+
+async function handleUploadImg(files: File[], callback: (urls: string[]) => void) {
+  const urls: string[] = []
+  for (const file of files) {
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const { data } = await mediaApi.upload(formData)
+      urls.push(`/uploads/${data.filePath}`)
+    } catch {
+      console.error('Image upload failed:', file.name)
+    }
+  }
+  callback(urls)
 }
 </script>
+
+<style scoped>
+.markdown-editor-wrapper {
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+</style>

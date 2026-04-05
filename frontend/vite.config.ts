@@ -20,6 +20,12 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
+  build: {
+    rollupOptions: {
+      // Fix WangEditor Vue wrapper default export issue with Rolldown
+      shimMissingExports: true,
+    },
+  },
   server: {
     port: 5173,
     proxy: {

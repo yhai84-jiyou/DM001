@@ -61,6 +61,10 @@ import { articleApi } from '@/api/article'
 import { sanitizeHtml } from '@/utils/sanitize'
 import type { PublicArticle, Category } from '@/types'
 import '@/styles/article.scss'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github.css'
+import Viewer from 'viewerjs'
+import 'viewerjs/dist/viewer.css'
 
 interface TocItem {
   id: string
@@ -108,12 +112,58 @@ async function loadArticle() {
     const { data } = await articleApi.getPublic(slug.value)
     article.value = data
     await nextTick()
+    highlightCode()
+    initImageViewer()
     generateToc()
     observeHeadings()
   } catch {
     article.value = null
   } finally {
     loading.value = false
+  }
+}
+
+// Code highlighting + copy button
+function highlightCode() {
+  if (!contentRef.value) return
+  const blocks = contentRef.value.querySelectorAll('pre code')
+  blocks.forEach((block) => {
+    hljs.highlightElement(block as HTMLElement)
+    // Add copy button
+    const pre = block.parentElement
+    if (pre && !pre.querySelector('.code-copy-btn')) {
+      const btn = document.createElement('button')
+      btn.className = 'code-copy-btn'
+      btn.textContent = '复制'
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(block.textContent || '').then(() => {
+          btn.textContent = '已复制!'
+          setTimeout(() => { btn.textContent = '复制' }, 2000)
+        })
+      })
+      pre.style.position = 'relative'
+      pre.appendChild(btn)
+    }
+  })
+}
+
+// Image viewer (viewerjs)
+let viewer: Viewer | null = null
+
+function initImageViewer() {
+  if (!contentRef.value) return
+  if (viewer) viewer.destroy()
+  const container = contentRef.value.querySelector('.article-html')
+  if (container) {
+    viewer = new Viewer(container as HTMLElement, {
+      toolbar: true,
+      navbar: false,
+      title: false,
+      movable: true,
+      zoomable: true,
+      rotatable: true,
+      scalable: true,
+    })
   }
 }
 
@@ -188,9 +238,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (observer) {
-    observer.disconnect()
-  }
+  if (observer) observer.disconnect()
+  if (viewer) viewer.destroy()
 })
 </script>
 
@@ -326,5 +375,25 @@ onUnmounted(() => {
 .article-not-found {
   padding: 80px 0;
   text-align: center;
+}
+
+:deep(.code-copy-btn) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 10px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #374151;
+  transition: all 0.15s;
+
+  &:hover {
+    background: #fff;
+    border-color: var(--doc-primary);
+    color: var(--doc-primary);
+  }
 }
 </style>
