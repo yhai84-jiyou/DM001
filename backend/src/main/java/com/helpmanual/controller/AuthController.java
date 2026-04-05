@@ -86,6 +86,12 @@ public class AuthController {
         return ResponseEntity.ok(new LoginResponse(token, UserResponse.fromEntity(admin)));
     }
 
+    @GetMapping("/setup-status")
+    public ResponseEntity<Map<String, Boolean>> setupStatus() {
+        boolean needSetup = !userService.hasAnyUsers();
+        return ResponseEntity.ok(Map.of("needSetup", needSetup));
+    }
+
     @GetMapping("/me")
     public ResponseEntity<UserResponse> me(Authentication authentication) {
         Long userId = (Long) authentication.getPrincipal();

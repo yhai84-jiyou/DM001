@@ -11,6 +11,7 @@ public record PublicArticleResponse(
         String slug,
         String contentHtml,
         String summary,
+        String currentVersion,
         LocalDateTime publishedAt,
         LocalDateTime updatedAt
 ) {
@@ -22,6 +23,7 @@ public record PublicArticleResponse(
                 a.getSlug(),
                 a.getPublishedContentHtml(),
                 a.getPublishedSummary() != null ? a.getPublishedSummary() : a.getSummary(),
+                a.getCurrentVersion(),
                 a.getPublishedAt(),
                 a.getUpdatedAt()
         );

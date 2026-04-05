@@ -6,9 +6,9 @@ export const articleApi = {
   list: (params?: { page?: number; size?: number; status?: string; categoryId?: number }) =>
     request.get<Page<Article>>('/api/admin/articles', { params }),
   get: (id: number) => request.get<Article>(`/api/admin/articles/${id}`),
-  create: (data: { categoryId: number; title: string; editorMode: string; content?: string }) =>
+  create: (data: { categoryId: number; title: string; editorMode: string; draftContent?: string }) =>
     request.post<Article>('/api/admin/articles', data),
-  update: (id: number, data: { title?: string; content?: string; contentHtml?: string; summary?: string; categoryId?: number }) =>
+  update: (id: number, data: { title?: string; draftContent?: string; draftContentHtml?: string; summary?: string; categoryId?: number }) =>
     request.put<Article>(`/api/admin/articles/${id}`, data),
   delete: (id: number) => request.post(`/api/admin/articles/${id}/trash`),
   permanentDelete: (id: number) => request.delete(`/api/admin/articles/${id}`),

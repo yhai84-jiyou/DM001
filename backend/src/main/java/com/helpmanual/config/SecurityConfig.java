@@ -35,6 +35,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/public/**").permitAll()
                 .requestMatchers("/api/admin/auth/login").permitAll()
                 .requestMatchers("/api/admin/auth/setup").permitAll()
+                .requestMatchers("/api/admin/auth/setup-status").permitAll()
                 .requestMatchers("/uploads/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/", "/index.html", "/favicon.ico",
                         "/assets/**", "/css/**", "/js/**", "/img/**", "/fonts/**").permitAll()

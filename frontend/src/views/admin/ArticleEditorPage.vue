@@ -197,8 +197,8 @@ async function handleSave() {
     if (isEdit.value && articleId.value) {
       await articleApi.update(articleId.value, {
         title: form.value.title,
-        content: form.value.content,
-        contentHtml: form.value.contentHtml || form.value.content,
+        draftContent: form.value.content,
+        draftContentHtml: form.value.contentHtml || form.value.content,
         categoryId: form.value.categoryId || undefined,
       })
       ElMessage.success('保存成功')
@@ -212,7 +212,7 @@ async function handleSave() {
         categoryId: form.value.categoryId,
         title: form.value.title,
         editorMode: form.value.editorMode,
-        content: form.value.content,
+        draftContent: form.value.content,
       })
       ElMessage.success('创建成功')
       router.replace(`/admin/articles/${data.id}/edit`)
@@ -287,6 +287,8 @@ async function handleRevert(ver: ArticleVersion) {
 function handleImport(file: UploadRawFile): boolean {
   const formData = new FormData()
   formData.append('file', file)
+  formData.append('categoryId', String(form.value.categoryId || ''))
+  formData.append('editorMode', form.value.editorMode)
   articleApi.importFile(formData).then(({ data }) => {
     form.value.content = data.draftContent || ''
     form.value.contentHtml = data.draftContentHtml || ''
