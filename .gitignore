@@ -1,7 +1,7 @@
 # macOS
 .DS_Store
 
-# Python
+# Python (legacy)
 __pycache__/
 *.py[cod]
 .venv/
@@ -11,14 +11,13 @@ venv/
 
 # Logs & runtime artifacts
 *.log
-flask_app.log
 
-# Node / package archives
+# Archives
 *.zip
 *.tar.gz
 *.rar
 
-# Java legacy entries kept for compatibility
+# Java / Maven
 *.class
 *.jar
 *.war
@@ -27,3 +26,30 @@ flask_app.log
 .mtj.tmp/
 hs_err_pid*
 replay_pid*
+backend/target/
+backend/.mvn/
+backend/*.iml
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# App data (runtime)
+data/
+uploads/
+
+# Env
+.env
+.env.local
+.env.production
