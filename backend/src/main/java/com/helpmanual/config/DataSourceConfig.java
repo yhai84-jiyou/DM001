@@ -18,6 +18,7 @@ public class DataSourceConfig {
                  Statement stmt = conn.createStatement()) {
                 stmt.execute("PRAGMA journal_mode=WAL;");
                 stmt.execute("PRAGMA busy_timeout=5000;");
+                stmt.execute("CREATE VIRTUAL TABLE IF NOT EXISTS article_fts USING fts5(title, content, article_id UNINDEXED);");
             }
         };
     }

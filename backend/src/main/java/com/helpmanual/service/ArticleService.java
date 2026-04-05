@@ -8,6 +8,7 @@ import com.helpmanual.exception.BadRequestException;
 import com.helpmanual.exception.ResourceNotFoundException;
 import com.helpmanual.repository.ArticleRepository;
 import com.helpmanual.repository.ArticleVersionRepository;
+import com.helpmanual.util.HtmlSanitizer;
 import org.jsoup.Jsoup;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.domain.Page;
@@ -24,11 +25,14 @@ public class ArticleService {
 
     private final ArticleRepository articleRepository;
     private final ArticleVersionRepository articleVersionRepository;
+    private final FtsService ftsService;
 
     public ArticleService(ArticleRepository articleRepository,
-                          ArticleVersionRepository articleVersionRepository) {
+                          ArticleVersionRepository articleVersionRepository,
+                          FtsService ftsService) {
         this.articleRepository = articleRepository;
         this.articleVersionRepository = articleVersionRepository;
+        this.ftsService = ftsService;
     }
 
     @Transactional
@@ -47,7 +51,7 @@ public class ArticleService {
         article.setSlug(slug);
         article.setCategoryId(categoryId);
         article.setDraftContent(draftContent);
-        article.setDraftContentHtml(draftContentHtml);
+        article.setDraftContentHtml(HtmlSanitizer.sanitize(draftContentHtml));
         article.setSummary(summary != null ? summary : generateSummary(draftContentHtml));
         article.setEditorMode(editorMode != null ? editorMode : EditorMode.RICH);
         article.setSortOrder(sortOrder != null ? sortOrder : 0);
@@ -80,7 +84,7 @@ public class ArticleService {
             article.setDraftContent(draftContent);
         }
         if (draftContentHtml != null) {
-            article.setDraftContentHtml(draftContentHtml);
+            article.setDraftContentHtml(HtmlSanitizer.sanitize(draftContentHtml));
         }
         if (summary != null) {
             article.setSummary(summary);
@@ -98,14 +102,16 @@ public class ArticleService {
 
     @Transactional
     @CacheEvict(value = "publicArticles", allEntries = true)
-    public Article publish(Long id, String changeNotes, Long publisherId) {
+    public Article publish(Long id, String versionLabel, String changeNotes, Long publisherId) {
         Article article = findById(id);
 
         // Create version
         long versionCount = articleVersionRepository.countByArticleId(id);
+        String label = (versionLabel != null && !versionLabel.isBlank())
+                ? versionLabel : "v" + (versionCount + 1);
         ArticleVersion version = new ArticleVersion();
         version.setArticleId(id);
-        version.setVersionLabel("v" + (versionCount + 1));
+        version.setVersionLabel(label);
         version.setChangeNotes(changeNotes);
         version.setTitle(article.getTitle());
         version.setContent(article.getDraftContent());
@@ -115,14 +121,19 @@ public class ArticleService {
 
         // Update article
         article.setPublishedTitle(article.getTitle());
-        article.setPublishedContentHtml(article.getDraftContentHtml());
+        article.setPublishedContentHtml(HtmlSanitizer.sanitize(article.getDraftContentHtml()));
         article.setPublishedSummary(article.getSummary());
         article.setStatus(ArticleStatus.PUBLISHED);
         article.setCurrentVersion(savedVersion.getId());
         article.setPublishedAt(LocalDateTime.now());
         article.setLastEditorId(publisherId);
 
-        return articleRepository.save(article);
+        Article saved = articleRepository.save(article);
+
+        // Sync FTS index
+        ftsService.syncArticle(saved.getId(), saved.getPublishedTitle(), saved.getPublishedContentHtml());
+
+        return saved;
     }
 
     @Transactional
@@ -134,6 +145,7 @@ public class ArticleService {
         article.setPublishedContentHtml(null);
         article.setPublishedSummary(null);
         article.setPublishedAt(null);
+        ftsService.removeArticle(id);
         return articleRepository.save(article);
     }
 
@@ -141,6 +153,7 @@ public class ArticleService {
     public Article softDelete(Long id) {
         Article article = findById(id);
         article.setDeleted(true);
+        ftsService.removeArticle(id);
         return articleRepository.save(article);
     }
 
@@ -158,6 +171,7 @@ public class ArticleService {
         Article article = articleRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Article not found"));
         articleVersionRepository.deleteAll(articleVersionRepository.findByArticleIdOrderByCreatedAtDesc(id));
+        ftsService.removeArticle(id);
         articleRepository.delete(article);
     }
 

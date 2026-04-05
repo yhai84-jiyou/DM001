@@ -10,6 +10,8 @@ import com.helpmanual.entity.Article;
 import com.helpmanual.entity.enums.EditorMode;
 import com.helpmanual.service.ArticleService;
 import com.helpmanual.service.OperationLogService;
+import com.helpmanual.util.HtmlSanitizer;
+import com.helpmanual.util.MarkdownRenderer;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -17,9 +19,13 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/admin/articles")
@@ -90,9 +96,10 @@ public class AdminArticleController {
                                                     @RequestBody(required = false) PublishRequest request,
                                                     Authentication authentication) {
         Long userId = (Long) authentication.getPrincipal();
+        String versionLabel = request != null ? request.versionLabel() : null;
         String changeNotes = request != null ? request.changeNotes() : null;
 
-        Article article = articleService.publish(id, changeNotes, userId);
+        Article article = articleService.publish(id, versionLabel, changeNotes, userId);
 
         operationLogService.log(userId, "PUBLISH", "ARTICLE", article.getId(),
                 "Published article: " + article.getTitle());
@@ -196,5 +203,53 @@ public class AdminArticleController {
         operationLogService.log(userId, "REORDER", "ARTICLE", null, "Reordered articles");
 
         return ResponseEntity.ok(Map.of("message", "Articles reordered"));
+    }
+
+    @PostMapping("/import")
+    public ResponseEntity<?> importFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("categoryId") Long categoryId,
+            @RequestParam("editorMode") String editorMode,
+            Authentication authentication) throws IOException {
+        Long userId = (Long) authentication.getPrincipal();
+
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null) {
+            return ResponseEntity.badRequest().body(Map.of("message", "File name is required"));
+        }
+
+        Set<String> allowedExtensions = Set.of(".md", ".docx");
+        String ext = originalFilename.contains(".")
+                ? originalFilename.substring(originalFilename.lastIndexOf('.')).toLowerCase()
+                : "";
+        if (!allowedExtensions.contains(ext)) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Only .md and .docx files are supported"));
+        }
+
+        String title = originalFilename.substring(0, originalFilename.lastIndexOf('.'));
+        EditorMode mode = EditorMode.valueOf(editorMode.toUpperCase());
+
+        String draftContent;
+        String draftContentHtml;
+
+        if (".md".equals(ext)) {
+            draftContent = new String(file.getBytes(), StandardCharsets.UTF_8);
+            draftContentHtml = HtmlSanitizer.sanitize(MarkdownRenderer.render(draftContent));
+        } else {
+            // .docx: frontend converts via mammoth.js and sends HTML as file content
+            draftContent = new String(file.getBytes(), StandardCharsets.UTF_8);
+            draftContentHtml = HtmlSanitizer.sanitize(draftContent);
+        }
+
+        Article article = articleService.create(
+                title, null, categoryId,
+                draftContent, draftContentHtml,
+                null, mode, null, userId
+        );
+
+        operationLogService.log(userId, "IMPORT", "ARTICLE", article.getId(),
+                "Imported article from file: " + originalFilename);
+
+        return ResponseEntity.ok(ArticleResponse.fromEntity(article));
     }
 }

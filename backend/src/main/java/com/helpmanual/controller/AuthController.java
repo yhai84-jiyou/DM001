@@ -7,16 +7,19 @@ import com.helpmanual.dto.response.UserResponse;
 import com.helpmanual.entity.User;
 import com.helpmanual.exception.BadRequestException;
 import com.helpmanual.exception.ResourceNotFoundException;
+import com.helpmanual.security.LoginRateLimiter;
 import com.helpmanual.service.DataInitializer;
 import com.helpmanual.service.OperationLogService;
 import com.helpmanual.service.UserService;
 import com.helpmanual.util.JwtTokenProvider;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+
 
 @RestController
 @RequestMapping("/api/admin/auth")
@@ -26,25 +29,42 @@ public class AuthController {
     private final JwtTokenProvider jwtTokenProvider;
     private final OperationLogService operationLogService;
     private final DataInitializer dataInitializer;
+    private final LoginRateLimiter loginRateLimiter;
 
     public AuthController(UserService userService,
                           JwtTokenProvider jwtTokenProvider,
                           OperationLogService operationLogService,
-                          DataInitializer dataInitializer) {
+                          DataInitializer dataInitializer,
+                          LoginRateLimiter loginRateLimiter) {
         this.userService = userService;
         this.jwtTokenProvider = jwtTokenProvider;
         this.operationLogService = operationLogService;
         this.dataInitializer = dataInitializer;
+        this.loginRateLimiter = loginRateLimiter;
     }
 
     @PostMapping("/login")
-    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
-        User user = userService.authenticate(request.username(), request.password());
-        String token = jwtTokenProvider.generateToken(user.getId(), user.getUsername(), user.getRole().name());
+    public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
+        String rateLimitKey = request.username();
 
-        operationLogService.log(user.getId(), "LOGIN", "USER", user.getId(), "User logged in");
+        if (loginRateLimiter.isBlocked(rateLimitKey)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("message", "Too many login attempts. Please try again later."));
+        }
 
-        return ResponseEntity.ok(new LoginResponse(token, UserResponse.fromEntity(user)));
+        try {
+            User user = userService.authenticate(request.username(), request.password());
+            loginRateLimiter.recordSuccess(rateLimitKey);
+
+            String token = jwtTokenProvider.generateToken(user.getId(), user.getUsername(), user.getRole().name());
+
+            operationLogService.log(user.getId(), "LOGIN", "USER", user.getId(), "User logged in");
+
+            return ResponseEntity.ok(new LoginResponse(token, UserResponse.fromEntity(user)));
+        } catch (Exception e) {
+            loginRateLimiter.recordFailure(rateLimitKey);
+            throw e;
+        }
     }
 
     @PostMapping("/setup")
