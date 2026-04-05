@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  helpmanual:
+    build: .
+    container_name: helpmanual
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # 持久化数据 - 迁移时只需复制 ./data 目录
+      - ./data:/app/data        # SQLite 数据库
+      - ./data/uploads:/app/uploads  # 上传的图片/视频/文件
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-please-change-this-to-a-random-string-at-least-32-chars}
+      - SPRING_PROFILES_ACTIVE=prod
+      - JAVA_OPTS=-Xmx512m -Xms256m
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/public/categories"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
