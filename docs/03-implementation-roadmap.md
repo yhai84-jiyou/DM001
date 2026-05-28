@@ -49,11 +49,14 @@
 3. 【前端技术栈】Vue 3 + TypeScript / Vite / Element Plus / Pinia / Axios / TipTap / ECharts
 4. 【代码风格】后端用 Python type hints，前端用 TypeScript strict mode
 5. 【API 规范】RESTful，路径格式 /api/v1/{resource}，统一返回格式 {"code": 0, "data": {}, "message": ""}
-6. 【数据库】所有表用 UUID 主键，时间字段用 TIMESTAMPTZ，状态字段用 VARCHAR 存枚举字符串
-7. 【变更日志】对 Issue 表的任何更新都必须通过 SQLAlchemy event listener 自动记录到 change_logs 表
-8. 【认证】JWT Token，通过 FastAPI Depends 注入当前用户
-9. 【权限】RBAC 模型，通过装饰器/依赖注入检查权限
-10. 【Git】每完成一个独立功能点就提交一次，commit message 用中文描述改动内容
+6. 【数据库】所有表用 UUID 主键，时间字段用 TIMESTAMPTZ。平台、问题类型、状态、优先级等可选项均通过 dictionary_items 表管理，Issue 表通过外键关联字典项 ID，不硬编码枚举
+7. 【数据字典】所有可枚举的选项（平台/问题类型/问题状态/优先级/AI服务商）都走 dictionary_categories + dictionary_items 表，前端下拉框的选项从字典接口动态加载
+8. 【状态机】问题状态流转规则存储在 status_transitions 表中，代码从数据库加载流转矩阵，不硬编码
+9. 【变更日志】对 Issue 表的任何更新都必须通过 SQLAlchemy event listener 自动记录到 change_logs 表
+10. 【AI集成】使用 openai Python SDK 调用 DeepSeek 和通义千问（两者均兼容 OpenAI 协议），通过 base_url 切换模型
+11. 【认证】JWT Token，通过 FastAPI Depends 注入当前用户
+12. 【权限】RBAC 模型，通过装饰器/依赖注入检查权限
+13. 【Git】每完成一个独立功能点就提交一次，commit message 用中文描述改动内容
 
 请先阅读 docs/ 目录下的三份设计文档，理解系统的本体模型和架构设计，然后再开始编码。
 ```
@@ -75,9 +78,9 @@
 具体要求：
 1. 创建 backend/app/ 目录结构：main.py, config.py, database.py, models/, schemas/, api/, services/, core/, utils/
 2. main.py：创建 FastAPI 应用，配置 CORS（允许 localhost:5173），挂载 API 路由前缀 /api/v1
-3. config.py：用 pydantic-settings 管理配置，从环境变量读取 DATABASE_URL, REDIS_URL, JWT_SECRET, CLAUDE_API_KEY
+3. config.py：用 pydantic-settings 管理配置，从环境变量读取 DATABASE_URL, REDIS_URL, JWT_SECRET, AI_DEEPSEEK_API_KEY, AI_DEEPSEEK_BASE_URL(默认https://api.deepseek.com), AI_QWEN_API_KEY, AI_QWEN_BASE_URL(默认https://dashscope.aliyuncs.com/compatible-mode/v1), AI_DEFAULT_PROVIDER(默认deepseek)
 4. database.py：配置 SQLAlchemy 2.0 异步引擎和会话，提供 get_db 依赖
-5. 创建 backend/requirements.txt，包含：fastapi, uvicorn[standard], sqlalchemy[asyncio], asyncpg, alembic, pydantic-settings, python-jose[cryptography], passlib[bcrypt], redis, httpx, python-multipart, anthropic
+5. 创建 backend/requirements.txt，包含：fastapi, uvicorn[standard], sqlalchemy[asyncio], asyncpg, alembic, pydantic-settings, python-jose[cryptography], passlib[bcrypt], redis, httpx, python-multipart, openai（用于调用 DeepSeek 和通义千问，它们都兼容 OpenAI API 协议）
 6. 创建 backend/.env.example 示例配置文件
 7. 创建 backend/Dockerfile（基于 python:3.11-slim）
 8. 初始化 Alembic：在 backend/ 下运行 alembic init，配置 alembic/env.py 使用异步引擎
@@ -145,6 +148,17 @@
 1. backend/app/models/organization.py：Organization 和 Department 模型
 2. backend/app/models/user.py：User 模型，包含 name, phone, email, password_hash, org_id, dept_id, user_type(CLIENT/VENDOR), vendor_role(PRODUCT/DEV/TEST/ADMIN), status(PENDING/ACTIVE/DISABLED)
 3. backend/app/models/role.py：Role, Permission, UserRole(关联表), RolePermission(关联表)
+4. backend/app/models/dictionary.py：
+   - DictionaryCategory 模型（字典分类）：name, code, description, is_system, is_active
+   - DictionaryItem 模型（字典项）：category_id, name, code, color, icon, sort_order, is_default, is_active, is_system, extra_config(JSONB)
+   - StatusTransition 模型（状态流转规则）：from_status_id(FK→DictionaryItem), to_status_id(FK→DictionaryItem), allowed_roles(JSONB), special_rule(VARCHAR), is_active
+   - 设置 UNIQUE(category_id, code) 约束在 DictionaryItem 上
+   - 设置 UNIQUE(from_status_id, to_status_id) 约束在 StatusTransition 上
+
+重要设计说明：
+- 平台、问题类型、问题状态、优先级等所有可选项都通过 DictionaryItem 管理，不再建独立的 platforms 表
+- Issue 表的 platform_id, issue_type_id, status_id, priority_id 都是外键指向 dictionary_items 表
+- 状态流转规则存储在 status_transitions 表中，代码从数据库加载，不硬编码
 
 所有模型：
 - 使用 UUID 主键（mapped_column(UUID, primary_key=True, default=uuid4)）
@@ -224,16 +238,53 @@
    - 甲方组织："XX集团"（org_type=CLIENT）
    - 乙方组织："我方团队"（org_type=VENDOR）
 
-2. 平台/端（platforms 表）：
-   - C端（员工电商平台）, B端（企业采购平台）, 运营管理后台, 供应商协同门户, 企业自维护平台
-
-3. 预置角色（roles 表）：
+2. 预置角色（roles 表）：
    - ADMIN, CLIENT_USER, CLIENT_MANAGER, VENDOR_PRODUCT, VENDOR_DEV, VENDOR_TEST, VENDOR_MANAGER
    - 每个角色配置对应的权限
 
-4. 数据字典：
-   - 分类"问题类型"下的项：待评估, 系统Bug, 设计缺陷, 功能优化, 咨询答疑, 外部系统问题
-   - 分类"优先级"下的项：紧急, 高, 中, 低
+3. 数据字典（所有可选项都走数据字典，这是配置化的核心）：
+
+   分类 PLATFORM（平台/端），is_system=true：
+   - C_END: C端（员工电商平台），color=#409EFF
+   - B_END: B端（企业采购平台），color=#67C23A
+   - OPS_BACKEND: 运营管理后台，color=#E6A23C
+   - SUPPLIER_PORTAL: 供应商协同门户，color=#F56C6C
+   - ENTERPRISE_PORTAL: 企业自维护平台，color=#909399
+
+   分类 ISSUE_TYPE（问题类型），is_system=true：
+   - PENDING_EVAL: 待评估，is_default=true
+   - BUG: 系统Bug
+   - DESIGN_DEFECT: 设计缺陷
+   - FEATURE_OPT: 功能优化
+   - CONSULTATION: 咨询答疑
+   - EXTERNAL_ISSUE: 外部系统问题
+
+   分类 ISSUE_STATUS（问题状态），is_system=true：
+   - SUBMITTED: 已提交，color=#909399，extra_config={"phase":"open"}
+   - EVALUATING: 待评估，color=#E6A23C，extra_config={"phase":"open"}
+   - PENDING: 待处理，color=#F56C6C，extra_config={"phase":"open"}
+   - DEV_IN_PROGRESS: 研发跟进中，color=#409EFF，extra_config={"phase":"in_progress"}
+   - PRODUCT_FOLLOW_UP: 产品跟进中，color=#409EFF，extra_config={"phase":"in_progress"}
+   - TESTING: 测试中，color=#409EFF，extra_config={"phase":"in_progress"}
+   - TEST_DONE_PENDING_VERIFY: 测试完成待产品验证，color=#E6A23C，extra_config={"phase":"in_progress"}
+   - VERIFIED_PENDING_RELEASE: 产品验证完成待上线，color=#67C23A，extra_config={"phase":"in_progress"}
+   - RELEASED: 已上线，color=#67C23A，extra_config={"phase":"done"}
+   - RESOLVED: 已解决，color=#67C23A，extra_config={"phase":"closed"}
+   - UNRESOLVED: 验证不通过，color=#F56C6C，extra_config={"phase":"open"}
+
+   分类 ISSUE_PRIORITY（优先级），is_system=true：
+   - CRITICAL: 紧急，color=#F56C6C，sort_order=1
+   - HIGH: 高，color=#E6A23C，sort_order=2
+   - MEDIUM: 中，color=#409EFF，sort_order=3，is_default=true
+   - LOW: 低，color=#909399，sort_order=4
+
+   分类 AI_PROVIDER（AI服务商），is_system=true：
+   - DEEPSEEK: DeepSeek，is_default=true，extra_config={"base_url":"https://api.deepseek.com","default_model":"deepseek-chat"}
+   - QWEN: 通义千问，extra_config={"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","default_model":"qwen-max"}
+
+4. 状态流转规则（status_transitions 表）：
+   按照 docs/01-ontology-design.md 中定义的流转规则表，逐条插入。
+   每条记录包含 from_status_id、to_status_id、allowed_roles（JSON数组）、special_rule（如 SUBMITTER_ONLY）。
 
 5. 管理员账号：admin / 手机号 13800000000 / 密码 admin123（ADMIN 角色）
 
@@ -275,9 +326,19 @@
    - 树形展示组织和部门
    - 支持增删改
 
-7. src/views/admin/DictManage.vue：
-   - 左侧字典分类列表，右侧字典项列表
-   - 支持增删改（系统内置项不可删除）
+7. src/views/admin/DictManage.vue — 数据字典管理（这是配置化的核心页面）：
+   - 左侧字典分类列表（PLATFORM、ISSUE_TYPE、ISSUE_STATUS、ISSUE_PRIORITY、AI_PROVIDER 等）
+   - 右侧对应分类的字典项列表（el-table）
+   - 每个字典项显示：名称、编码、颜色（色块预览）、排序、是否默认、是否启用
+   - 支持增删改字典项（系统内置项 is_system=true 的不可删除，只可禁用/启用）
+   - 拖拽排序功能（调整 sort_order）
+   - 新增/编辑弹窗包含：名称、编码、颜色选择器、图标、是否默认、扩展配置（JSON 编辑器）
+
+8. src/views/admin/StatusFlowManage.vue — 状态流转规则管理：
+   - 展示当前所有状态流转规则（表格形式）：源状态 → 目标状态、允许角色、特殊规则
+   - 支持新增/编辑/删除/启用/禁用流转规则
+   - 新增规则时：源状态和目标状态都从 ISSUE_STATUS 字典项的下拉框中选择
+   - 可视化展示状态流转图（可选，用 ECharts 或简单的连线图）
 
 使用 Element Plus 组件，保持界面简洁专业。
 ```
@@ -328,36 +389,39 @@
 **给 AI 的提示词：**
 
 ```
-请实现问题状态机：
+请实现问题状态机（数据字典驱动，不硬编码）：
 
 backend/app/core/state_machine.py：
 
-1. 定义所有状态枚举（参考 docs/01-ontology-design.md 第四章）：
-   SUBMITTED, EVALUATING, PENDING, DEV_IN_PROGRESS, PRODUCT_FOLLOW_UP,
-   TESTING, TEST_DONE_PENDING_VERIFY, VERIFIED_PENDING_RELEASE,
-   RELEASED, RESOLVED, UNRESOLVED
+1. 【不要硬编码状态枚举】状态列表从 dictionary_items 表中 category_code='ISSUE_STATUS' 的记录动态加载。
 
-2. 定义状态流转矩阵 TRANSITIONS：一个字典，key 是当前状态，value 是
-   {目标状态: [允许的角色列表]} 的字典。
-   特殊处理：RELEASED → RESOLVED/UNRESOLVED 时，角色检查改为"必须是该问题的 submitter_id"
+2. 【不要硬编码流转矩阵】状态流转规则从 status_transitions 表中加载。
+   实现 load_transition_matrix(db_session) 函数：
+   - 查询所有 is_active=True 的 StatusTransition 记录
+   - 通过 relationship 拿到 from_status 和 to_status 的 code
+   - 组装成 {from_code: {to_code: {"allowed_roles": [...], "special_rule": "..."}}} 的字典
+   - 用 Redis 缓存此矩阵，设置 TTL=300s，避免每次请求都查库
+   - 提供 invalidate_transition_cache() 方法，在后台修改流转规则时调用
 
-3. 实现 transition(issue, target_status, current_user) 函数：
+3. 实现 transition(issue, target_status_code, current_user, db_session) 函数：
+   - 从缓存/数据库加载流转矩阵
    - 校验当前状态是否可流转到目标状态
-   - 校验当前用户是否有权执行此流转
-   - 对于 RESOLVED/UNRESOLVED，校验 current_user.id == issue.submitter_id
-   - 校验通过则更新 issue.status
-   - 如果流转到 RESOLVED，自动设置 resolved_at 和 closed_by、closed_at
-   - 如果流转到 UNRESOLVED，自动清空 resolved_at
+   - 如果 special_rule == 'SUBMITTER_ONLY'，校验 current_user.id == issue.submitter_id
+   - 否则校验当前用户角色是否在 allowed_roles 列表中
+   - 校验通过后：查询目标状态的 DictionaryItem，更新 issue.status_id
+   - 如果目标状态 code 为 RESOLVED，自动设置 resolved_at、closed_by、closed_at
+   - 如果目标状态 code 为 UNRESOLVED，自动清空 resolved_at
    - 校验失败抛出自定义异常 StateTransitionError
 
-4. 实现 get_available_transitions(issue, current_user) 函数：
-   返回当前用户对当前问题可以执行的所有目标状态列表（前端用来显示可操作的按钮）
+4. 实现 get_available_transitions(issue, current_user, db_session) 函数：
+   返回当前用户对此问题可以执行的所有目标状态列表（包含 code、name、color），前端用来显示可操作的按钮
 
 5. 编写单元测试 backend/tests/test_state_machine.py，覆盖：
    - 正常流转路径
    - 非法流转被拒绝
    - 角色权限校验
    - 提交人关闭权限校验
+   - 新增状态+流转规则后能正确生效（验证配置化能力）
 ```
 
 ### 步骤 3.3 — 问题 CRUD API
@@ -373,12 +437,12 @@ backend/app/api/issues.py：
    - 甲方用户可以创建
    - 自动生成 issue_no（格式 ISS-YYYYMMDD-NNNN）
    - 自动设置 submitter_id 和 submitted_at
-   - 初始状态为 SUBMITTED
+   - 初始状态：查询 ISSUE_STATUS 字典中 code='SUBMITTED' 的 DictionaryItem，设置 status_id
 
 2. GET /api/v1/issues — 问题列表
    - 分页（page, page_size）
-   - 筛选：platform_id, issue_type_id, status, priority, submitter_id, product_owner_id, dev_owner_id, test_owner_id, date_range
-   - 排序：submitted_at, updated_at, priority
+   - 筛选：platform_id, issue_type_id, status_id, priority_id, submitter_id, product_owner_id, dev_owner_id, test_owner_id, date_range（所有字典关联字段用 ID 筛选）
+   - 排序：submitted_at, updated_at, priority_id
    - 甲方用户只能看到自己组织提交的问题
    - 返回数据包含关联的 submitter、owner 等人员信息
 
@@ -390,8 +454,13 @@ backend/app/api/issues.py：
    - 权限：管理员和乙方管理者可编辑所有字段，对应角色可编辑自己负责的字段
 
 5. POST /api/v1/issues/{id}/transition — 状态流转
-   - 请求体 {"target_status": "DEV_IN_PROGRESS"}
+   - 请求体 {"target_status_code": "DEV_IN_PROGRESS"}（传字典项 code）
    - 调用状态机引擎校验并执行流转
+
+同时新增数据字典公共接口（前端下拉框需要）：
+   - GET /api/v1/dictionary/{category_code}/items — 获取某分类下所有启用的字典项（如 /api/v1/dictionary/PLATFORM/items）
+   - 返回 [{"id": "...", "name": "...", "code": "...", "color": "...", "sort_order": ...}, ...]
+   - 前端所有下拉框、筛选器的选项都从此接口动态加载
 
 6. GET /api/v1/issues/{id}/transitions — 获取可用的状态流转
    - 返回当前用户对此问题可执行的目标状态列表
@@ -414,6 +483,9 @@ backend/app/schemas/issue.py：请求/响应 Pydantic 模型
 
 1. src/views/issue/IssueList.vue — 问题列表页：
    - 顶部筛选栏：平台（下拉）、问题类型（下拉）、状态（多选）、优先级（下拉）、日期范围（日期选择器）、关键词搜索
+   - 【关键】所有下拉框的选项都通过 GET /api/v1/dictionary/{category_code}/items 接口动态加载，不在前端硬编码
+   - 创建 src/stores/dictionary.ts（Pinia store）：缓存各分类的字典项，提供 getItemsByCategory(code) 方法
+   - 状态标签的颜色使用字典项的 color 字段
    - Element Plus el-table 展示列表：问题编号、标题、平台、类型、状态（彩色标签）、优先级、提交人、提交时间、产品/研发/测试跟进人
    - 分页组件
    - 点击行跳转详情页
@@ -436,7 +508,7 @@ backend/app/schemas/issue.py：请求/响应 Pydantic 模型
    - 底部标签页：
      - "变更记录" tab：时间线展示所有 ChangeLog，格式如"张三 于 2026-05-28 14:30 将 状态 从 待处理 改为 研发跟进中"
 
-4. src/components/issue/StatusBadge.vue — 状态标签组件（不同状态不同颜色）
+4. src/components/issue/StatusBadge.vue — 状态标签组件（颜色从字典项的 color 字段读取，不硬编码颜色映射）
 5. src/components/issue/ChangeTimeline.vue — 变更日志时间线组件
 ```
 
@@ -545,7 +617,7 @@ backend/app/services/report_service.py：
 3. backend/app/services/report_service.py 中添加 generate_daily_report() 方法：
    - 计算前一日的所有统计数据（新增、关闭、状态变化、分端、分人等）
    - 将统计数据组装成 JSON
-   - 调用 Claude API，prompt 如下：
+   - 调用 DeepSeek/千问 API，prompt 如下：
      "你是一个项目管理日报助手。以下是昨日的问题跟踪数据统计：{json_data}。
       请生成一份简洁的项目日报，包括：1）整体概况 2）重点关注（停滞问题、高优问题）
       3）各端情况简述 4）建议关注事项。控制在300字以内。"
@@ -576,14 +648,20 @@ backend/app/services/report_service.py：
 ```
 请实现 AI 辅助填写问题表单的功能：
 
-1. backend/app/services/ai_service.py 中实现 parse_issue_from_text(text: str) 方法：
-   - 从数据库加载当前可用的数据字典（问题类型列表、平台列表、优先级列表）
+前置：先在 backend/app/services/ai_service.py 中实现 AI 多模型适配层：
+   - get_ai_client() 方法：从数据字典 AI_PROVIDER 读取 is_default=True 的那条记录，
+     取其 extra_config 中的 base_url 和 default_model，从环境变量读取对应的 api_key
+     （AI_DEEPSEEK_API_KEY 或 AI_QWEN_API_KEY），返回 openai.OpenAI 实例
+   - 所有 AI 调用都通过此方法获取 client，管理员切换字典的默认项即可切换模型
+
+1. 同文件中实现 parse_issue_from_text(text: str) 方法：
+   - 从数据库加载当前可用的数据字典（问题类型列表、平台列表、优先级列表 — 都从 dictionary_items 表动态查询）
    - 构建 System Prompt：
      "你是一个项目问题解析助手。用户会用自然语言描述一个问题，你需要从中提取结构化信息。
       
       可选的平台：{platforms}
       可选的问题类型：{issue_types}
-      可选的优先级：紧急/高/中/低
+      可选的优先级：{priorities}  ← 从 ISSUE_PRIORITY 字典动态加载
       
       请从用户描述中提取以下字段，返回 JSON 格式：
       {
@@ -596,7 +674,13 @@ backend/app/services/report_service.py：
       
       如果某个字段无法从用户描述中判断，对应值设为 null。
       只返回 JSON，不要其他说明文字。"
-   - 调用 Claude API（使用用户配置的 API Key）
+   - 通过 openai SDK 调用 AI（根据系统配置的默认模型自动选择 DeepSeek 或千问）：
+     ```python
+     from openai import OpenAI
+     provider = get_default_ai_provider()  # 从数据字典 AI_PROVIDER 读取默认项
+     client = OpenAI(base_url=provider.base_url, api_key=provider.api_key)
+     response = client.chat.completions.create(model=provider.model, messages=[...])
+     ```
    - 解析返回的 JSON 并返回
 
 2. backend/app/api/ai_assistant.py：
@@ -621,18 +705,18 @@ backend/app/services/report_service.py：
 请实现右下角的 AI 悬浮助手功能：
 
 1. backend/app/services/ai_service.py 中实现 chat(session_id, user_id, message) 方法：
-   - 分析用户意图（通过 Claude API）：
-     a) 统计查询类（如"B端有多少Bug"）→ 生成 SQL 查询 → 执行 → 将结果传给 Claude 生成回答
+   - 分析用户意图（通过 DeepSeek/千问 API）：
+     a) 统计查询类（如"B端有多少Bug"）→ 生成 SQL 查询 → 执行 → 将结果传给 AI 生成回答
      b) 状态查询类（如"ISS-0012 什么状态"）→ 查询 Issue → 格式化回答
      c) 停滞分析类（如"哪些问题卡住了"）→ 查询停滞问题 → 生成分析
      d) 人员查询类（如"张三手上有多少问题"）→ 聚合查询 → 回答
-     e) 通用问答 → 直接 Claude 回答
+     e) 通用问答 → 直接调用 AI 回答
 
    - 实现方式：
-     Step 1: 用 Claude 做意图识别 + 生成查询参数
+     Step 1: 用 DeepSeek/千问 做意图识别 + 生成查询参数
      System Prompt 包含数据库表结构摘要和可用的查询函数列表
      Step 2: 根据意图调用对应的 Service 方法获取数据
-     Step 3: 将数据 + 用户问题传给 Claude 生成最终回答
+     Step 3: 将数据 + 用户问题传给 AI 生成最终回答
 
    - 保存对话记录到 ai_conversations 表
 
@@ -672,8 +756,10 @@ backend/app/services/report_service.py：
        最后更新：{updated_at}。"
 
    b) generate_embedding(text) 方法：
-      调用 Claude/OpenAI 的 Embedding API 将文本转为向量
-      （如果用 Claude，可以用 Voyage AI 的 embedding；或者用开源的 sentence-transformers 本地生成）
+      将文本转为向量。方案选择：
+      - DeepSeek Embedding API（如果可用）
+      - 通义千问 text-embedding-v3 API
+      - 或开源的 sentence-transformers 本地生成（无需调用外部 API，推荐 BAAI/bge-large-zh-v1.5）
 
    c) upsert_semantic_entity(entity_type, entity_id, summary_text) 方法：
       生成 embedding → 存入/更新 semantic_entities 表
@@ -691,7 +777,7 @@ backend/app/services/report_service.py：
 
 4. 在 AI 助手的 chat 方法中集成向量搜索：
    - 当用户问题涉及"类似问题"、"相关问题"时，先做向量搜索找到相似 Issue
-   - 将搜索结果作为上下文传给 Claude 生成回答
+   - 将搜索结果作为上下文传给 AI 生成回答
 
 5. backend/app/api/ai_assistant.py 添加：
    - POST /api/v1/ai/similar-issues — 接收 {"text": "..."}，返回语义最相似的问题列表

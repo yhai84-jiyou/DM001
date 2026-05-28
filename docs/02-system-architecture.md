@@ -31,7 +31,9 @@
 | **前端构建** | Vite | 5+ | 开发体验好，构建快 |
 | **富文本编辑** | TipTap | 2.x | 基于 ProseMirror，支持图片、协作 |
 | **图表** | ECharts | 5+ | Apache 开源，中文友好 |
-| **AI SDK** | Anthropic Python SDK | 最新 | 调用 Claude API |
+| **AI SDK** | openai Python SDK | 1.x | DeepSeek 和通义千问均兼容 OpenAI 协议，一套 SDK 对接多个模型 |
+| **AI 模型（主）** | DeepSeek (deepseek-chat) | 最新 | 性价比高，中文能力强，用于日常对话和解析 |
+| **AI 模型（备）** | 通义千问 (qwen-max) | 最新 | 阿里云，作为备选/对比模型 |
 | **任务调度** | APScheduler | 3.10+ | 定时生成日报/周报 |
 | **文件存储** | 本地磁盘 + MinIO（可选） | - | 初期本地存储，后续可切 MinIO |
 | **认证** | JWT (python-jose) | - | 轻量，前后端分离友好 |
@@ -45,6 +47,31 @@ Django 自带 Admin、Auth、ORM，看似省事，但：
 - Django Admin 做简单管理可以，做复杂定制 UI 反而束缚大
 - FastAPI + SQLAlchemy 的事件钩子更适合实现"自动 ChangeLog"
 - FastAPI 的依赖注入和类型系统对 AI 工具链更友好
+
+### 2.4 AI 多模型适配设计
+
+DeepSeek 和通义千问都兼容 OpenAI API 协议，通过统一的 `openai` Python SDK 调用，只需切换 `base_url` 和 `api_key`：
+
+```python
+# DeepSeek
+client = OpenAI(base_url="https://api.deepseek.com", api_key=DEEPSEEK_API_KEY)
+response = client.chat.completions.create(model="deepseek-chat", messages=[...])
+
+# 通义千问
+client = OpenAI(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", api_key=QWEN_API_KEY)
+response = client.chat.completions.create(model="qwen-max", messages=[...])
+```
+
+系统通过 `ai_providers` 数据字典管理可用的 AI 模型，管理员可在后台切换默认模型：
+
+| 配置项 | 说明 |
+|--------|------|
+| AI_DEFAULT_PROVIDER | 默认 AI 提供商（deepseek / qwen） |
+| AI_DEEPSEEK_API_KEY | DeepSeek API Key |
+| AI_DEEPSEEK_MODEL | DeepSeek 模型名（默认 deepseek-chat） |
+| AI_QWEN_API_KEY | 通义千问 API Key |
+| AI_QWEN_MODEL | 通义千问模型名（默认 qwen-max） |
+| AI_EMBEDDING_PROVIDER | Embedding 提供商（可用 DeepSeek / 本地 sentence-transformers） |
 
 ### 2.3 为什么用 pgvector 而不是独立向量库
 
@@ -87,7 +114,7 @@ Django 自带 Admin、Auth、ORM，看似省事，但：
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  │                         │                                 │  │
 │  │  ┌─────────────── Infrastructure Layer ────────────────┐  │  │
-│  │  │ PostgreSQL │ pgvector │ Redis │ FileStorage │Claude  │  │  │
+│  │  │ PostgreSQL │ pgvector │ Redis │ FileStorage │DeepSeek/Qwen│  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
@@ -141,7 +168,7 @@ backend/
 │   │   ├── issue_service.py     # 含状态机逻辑
 │   │   ├── changelog_service.py # 变更日志核心逻辑
 │   │   ├── report_service.py    # 统计计算 + 日报生成
-│   │   ├── ai_service.py        # Claude API 调用
+│   │   ├── ai_service.py        # DeepSeek/千问 API 调用（多模型适配）
 │   │   ├── semantic_service.py  # 语义层 + 向量操作
 │   │   └── scheduler_service.py # 定时任务
 │   │
@@ -321,44 +348,71 @@ CREATE TABLE role_permissions (
     PRIMARY KEY (role_id, permission_id)
 );
 
--- 平台/端
-CREATE TABLE platforms (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
-    code VARCHAR(50) UNIQUE NOT NULL,
-    description TEXT,
-    sort_order INT DEFAULT 0
-);
+-- ============================================================
+-- 数据字典（统一配置中心 — 平台/状态/类型/优先级等全部走字典）
+-- ============================================================
 
 -- 数据字典分类
 CREATE TABLE dictionary_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
-    code VARCHAR(50) UNIQUE NOT NULL,
-    is_system BOOLEAN DEFAULT FALSE
+    name VARCHAR(100) NOT NULL,        -- 分类名称
+    code VARCHAR(50) UNIQUE NOT NULL,  -- 分类编码
+    description TEXT,                  -- 分类说明
+    is_system BOOLEAN DEFAULT FALSE,   -- 系统内置分类不可删除
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 数据字典项
 CREATE TABLE dictionary_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category_id UUID NOT NULL REFERENCES dictionary_categories(id),
-    name VARCHAR(100) NOT NULL,
-    code VARCHAR(50) NOT NULL,
-    sort_order INT DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    extra_config JSONB
+    name VARCHAR(100) NOT NULL,        -- 显示名称
+    code VARCHAR(50) NOT NULL,         -- 编码（同分类内唯一）
+    color VARCHAR(20),                 -- 前端显示颜色（如状态标签色）
+    icon VARCHAR(50),                  -- 图标标识
+    sort_order INT DEFAULT 0,          -- 排序
+    is_default BOOLEAN DEFAULT FALSE,  -- 是否默认选中项
+    is_active BOOLEAN DEFAULT TRUE,    -- 是否启用（禁用后前端不显示为可选项，但历史数据保留）
+    is_system BOOLEAN DEFAULT FALSE,   -- 系统内置项不可删除
+    extra_config JSONB,                -- 扩展配置（存状态流转规则等）
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(category_id, code)
 );
 
--- 问题（核心表）
+-- 状态流转规则表（配置化的状态机）
+CREATE TABLE status_transitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_status_id UUID NOT NULL REFERENCES dictionary_items(id),  -- 源状态
+    to_status_id UUID NOT NULL REFERENCES dictionary_items(id),    -- 目标状态
+    allowed_roles JSONB NOT NULL,      -- 允许操作的角色编码列表，如 ["VENDOR_DEV","VENDOR_TEST"]
+    special_rule VARCHAR(50),          -- 特殊规则，如 'SUBMITTER_ONLY'（仅提交人可操作）
+    is_active BOOLEAN DEFAULT TRUE,
+    UNIQUE(from_status_id, to_status_id)
+);
+
+-- ============================================================
+-- 预置数据字典分类（种子数据）
+-- ============================================================
+-- PLATFORM        — 平台/端（C端、B端、运营后台、供应商门户、企业自维护）
+-- ISSUE_TYPE      — 问题类型（待评估、系统Bug、设计缺陷、功能优化、咨询答疑、外部系统问题）
+-- ISSUE_STATUS    — 问题状态（已提交、待评估、待处理、研发跟进中...）
+-- ISSUE_PRIORITY  — 优先级（紧急、高、中、低）
+-- USER_TYPE       — 用户类型（甲方、乙方）
+-- VENDOR_ROLE     — 乙方角色（产品、研发、测试、管理员）
+-- AI_PROVIDER     — AI服务商（DeepSeek、通义千问）
+-- ============================================================
+
+-- 问题（核心表 — 所有可选字段均关联数据字典）
 CREATE TABLE issues (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     issue_no VARCHAR(30) UNIQUE NOT NULL,
     title VARCHAR(500) NOT NULL,
     description TEXT,
-    platform_id UUID NOT NULL REFERENCES platforms(id),
-    issue_type_id UUID NOT NULL REFERENCES dictionary_items(id),
-    priority VARCHAR(20) DEFAULT 'MEDIUM',
-    status VARCHAR(40) NOT NULL DEFAULT 'SUBMITTED',
+    platform_id UUID NOT NULL REFERENCES dictionary_items(id),     -- 关联字典：PLATFORM 分类
+    issue_type_id UUID NOT NULL REFERENCES dictionary_items(id),   -- 关联字典：ISSUE_TYPE 分类
+    priority_id UUID REFERENCES dictionary_items(id),              -- 关联字典：ISSUE_PRIORITY 分类
+    status_id UUID NOT NULL REFERENCES dictionary_items(id),       -- 关联字典：ISSUE_STATUS 分类
     submitter_id UUID NOT NULL REFERENCES users(id),
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     product_owner_id UUID REFERENCES users(id),
@@ -372,7 +426,7 @@ CREATE TABLE issues (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_issues_status ON issues(status);
+CREATE INDEX idx_issues_status ON issues(status_id);
 CREATE INDEX idx_issues_platform ON issues(platform_id);
 CREATE INDEX idx_issues_submitter ON issues(submitter_id);
 CREATE INDEX idx_issues_submitted_at ON issues(submitted_at);
@@ -484,29 +538,40 @@ def issue_after_update(mapper, connection, target):
             )
 ```
 
-### 7.2 状态机引擎
+### 7.2 状态机引擎（数据字典驱动）
+
+状态流转规则**不再硬编码**，而是从 `status_transitions` 表中动态加载。管理员可在后台"数据字典 → 问题状态"中配置哪些状态之间可以流转、哪些角色有权操作。
 
 ```python
-# 状态流转定义
-TRANSITIONS = {
-    'SUBMITTED':                  {'EVALUATING': ['VENDOR_PRODUCT']},
-    'EVALUATING':                 {'PENDING': ['VENDOR_PRODUCT']},
-    'PENDING':                    {'DEV_IN_PROGRESS': ['VENDOR_DEV'],
-                                   'PRODUCT_FOLLOW_UP': ['VENDOR_PRODUCT']},
-    'DEV_IN_PROGRESS':            {'TESTING': ['VENDOR_DEV'],
-                                   'PRODUCT_FOLLOW_UP': ['VENDOR_DEV']},
-    'PRODUCT_FOLLOW_UP':          {'DEV_IN_PROGRESS': ['VENDOR_PRODUCT'],
-                                   'VERIFIED_PENDING_RELEASE': ['VENDOR_PRODUCT']},
-    'TESTING':                    {'TEST_DONE_PENDING_VERIFY': ['VENDOR_TEST'],
-                                   'DEV_IN_PROGRESS': ['VENDOR_TEST']},
-    'TEST_DONE_PENDING_VERIFY':   {'VERIFIED_PENDING_RELEASE': ['VENDOR_PRODUCT'],
-                                   'TESTING': ['VENDOR_PRODUCT']},
-    'VERIFIED_PENDING_RELEASE':   {'RELEASED': ['VENDOR_PRODUCT', 'VENDOR_DEV']},
-    'RELEASED':                   {'RESOLVED': ['SUBMITTER_ONLY'],
-                                   'UNRESOLVED': ['SUBMITTER_ONLY']},
-    'UNRESOLVED':                 {'PENDING': ['VENDOR_PRODUCT']},
-}
+# 伪代码 — 从数据库加载状态流转规则
+def load_transitions() -> dict:
+    """从 status_transitions 表加载流转矩阵，缓存到 Redis"""
+    rows = db.query(StatusTransition).filter(is_active=True).all()
+    matrix = {}
+    for row in rows:
+        from_code = row.from_status.code   # 通过 relationship 拿到字典项编码
+        to_code = row.to_status.code
+        matrix.setdefault(from_code, {})[to_code] = {
+            "allowed_roles": row.allowed_roles,    # ["VENDOR_DEV", "VENDOR_TEST"]
+            "special_rule": row.special_rule,       # "SUBMITTER_ONLY" 或 None
+        }
+    return matrix
+
+def transition(issue, target_status_code, current_user):
+    matrix = load_transitions()  # 优先从 Redis 缓存读
+    current_code = issue.status.code
+    rule = matrix.get(current_code, {}).get(target_status_code)
+    if not rule:
+        raise StateTransitionError("不允许的状态流转")
+    if rule["special_rule"] == "SUBMITTER_ONLY":
+        if current_user.id != issue.submitter_id:
+            raise StateTransitionError("只有提交人可以执行此操作")
+    elif current_user.role_code not in rule["allowed_roles"]:
+        raise StateTransitionError("当前角色无权执行此操作")
+    # 执行流转...
 ```
+
+**配置化的好处**：如果未来要新增一个状态（比如"需求评审中"），只需要在数据字典里加一个 ISSUE_STATUS 字典项，再在 status_transitions 表中配置它的上下游流转关系，**无需改代码**。
 
 ### 7.3 AI 辅助录入流程
 
@@ -517,11 +582,11 @@ TRANSITIONS = {
 前端调用 POST /api/ai/parse-issue
         │
         ▼
-后端将大白话 + 系统 Prompt 发给 Claude API
-System Prompt 包含：字段定义、数据字典值、平台列表
+后端将大白话 + 系统 Prompt 发给 DeepSeek/千问 API（根据后台配置的默认模型）
+System Prompt 包含：字段定义、数据字典值（从字典表动态加载）、平台列表
         │
         ▼
-Claude 返回结构化 JSON：
+AI 返回结构化 JSON：
 {
   "title": "...",
   "description": "...",
@@ -553,7 +618,7 @@ Claude 返回结构化 JSON：
   1. 分析用户意图（统计查询 / 状态查询 / 趋势分析...）
   2. 如果需要数据：生成 SQL 查询 或 向量搜索
   3. 执行查询获取结果
-  4. 将结果 + 上下文传给 Claude 生成自然语言回答
+  4. 将结果 + 上下文传给 DeepSeek/千问 生成自然语言回答
         │
         ▼
 流式返回回答到前端对话面板
@@ -573,7 +638,7 @@ ReportService 计算前一日统计：
   - 各状态分布
         │
         ▼
-将统计数据 JSON 传给 Claude API
+将统计数据 JSON 传给 DeepSeek/千问 API
 System Prompt: "你是项目日报助手，请基于以下数据生成简洁的日报..."
         │
         ▼
@@ -651,7 +716,7 @@ System Prompt: "你是项目日报助手，请基于以下数据生成简洁的�
           │
           │ HTTPS
           ▼
-    Claude API (api.anthropic.com)
+    DeepSeek API (api.deepseek.com) / 千问 API (dashscope.aliyuncs.com)
 ```
 
 ### Docker Compose 服务清单
