@@ -1,54 +1,76 @@
 services:
-  postgres:
+  pm-postgres:
     image: pgvector/pgvector:pg16
+    container_name: pm-postgres
     environment:
       POSTGRES_DB: pm_system
       POSTGRES_USER: pm_admin
-      POSTGRES_PASSWORD: changeme
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    # 不对外暴露端口，只在 Docker 网络内访问（避免和服务器已有的 5432 冲突）
+    expose:
+      - "5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pm-pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pm_admin -d pm_system"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: always
+    networks:
+      - pm-net
 
-  redis:
+  pm-redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    container_name: pm-redis
+    # 不对外暴露端口，只在 Docker 网络内访问（避免和服务器已有的 6379 冲突）
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: always
+    networks:
+      - pm-net
 
-  backend:
+  pm-backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    container_name: pm-backend
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://pm_admin:changeme@postgres:5432/pm_system
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://pm_admin:${DB_PASSWORD:-changeme}@pm-postgres:5432/pm_system
+      REDIS_URL: redis://pm-redis:6379/0
     depends_on:
-      postgres:
+      pm-postgres:
         condition: service_healthy
-      redis:
+      pm-redis:
         condition: service_healthy
     volumes:
-      - uploads:/data/uploads
+      - pm-uploads:/data/uploads
+    restart: always
+    networks:
+      - pm-net
 
-  frontend:
+  pm-frontend:
     build: ./frontend
+    container_name: pm-frontend
     ports:
-      - "80:80"
+      - "3040:80"
     depends_on:
-      - backend
+      - pm-backend
+    restart: always
+    networks:
+      - pm-net
 
 volumes:
-  pgdata:
-  uploads:
+  pm-pgdata:
+  pm-uploads:
+
+networks:
+  pm-net:
+    name: pm-net

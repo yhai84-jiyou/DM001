@@ -1,7 +1,7 @@
-.PHONY: dev up down migrate seed
+.PHONY: dev up down logs seed status
 
 dev:
-	docker compose up postgres redis -d
+	docker compose up pm-postgres pm-redis -d
 
 up:
 	docker compose up -d --build
@@ -9,8 +9,11 @@ up:
 down:
 	docker compose down
 
-migrate:
-	cd backend && alembic upgrade head
+logs:
+	docker compose logs -f --tail=50
 
 seed:
-	cd backend && python -m app.seed
+	docker compose exec pm-backend python -m app.seed
+
+status:
+	docker compose ps
