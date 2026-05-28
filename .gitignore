@@ -13,10 +13,18 @@ venv/
 *.log
 flask_app.log
 
-# Node / package archives
+# Environment
+.env
+
+# Node
+node_modules/
+dist/
 *.zip
 *.tar.gz
 *.rar
+
+# Uploads
+/data/
 
 # Java legacy entries kept for compatibility
 *.class
