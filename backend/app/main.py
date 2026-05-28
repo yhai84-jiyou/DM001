@@ -14,6 +14,17 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.database import engine, Base
+    from app.models import *  # noqa: F401,F403
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    from app.seed import seed_all
+    try:
+        await seed_all()
+    except Exception as e:
+        print(f"种子数据: {e}")
+
     yield
 
 
@@ -25,7 +36,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
