@@ -5,6 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.api import auth, users, organizations, issues, dictionary, reports, changelog, attachments, ai_assistant
+from app.core.changelog_hook import register_hooks
+
+register_hooks()
 
 settings = get_settings()
 
